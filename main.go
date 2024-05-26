@@ -4,10 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -15,35 +19,65 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const difficulty = 2
+
 type Block struct {
-	Index     int
-	Timestamp string
-	BPM       int
-	Hash      string
-	PrevHash  string
+	Index      int
+	Timestamp  string
+	BPM        int
+	Hash       string
+	PrevHash   string
+	Difficulty int
+	Nounce     string
 }
 
 var BlockChain []Block
 
+type Message struct {
+	BPM int
+}
+
+var mutex = &sync.Mutex{}
+
 func calculateHash(block Block) string {
-	record := string(rune(block.Index)) + block.Timestamp + string(rune(block.BPM)) + block.PrevHash
+	record := strconv.Itoa(block.Index) + block.Timestamp + strconv.Itoa(block.BPM) + block.PrevHash + block.Nounce
 	h := sha256.New()
 	h.Write([]byte(record))
 	hashed := h.Sum(nil)
 	return hex.EncodeToString(hashed)
 }
 
-func generateBlock(oldBlock Block, BPM int) (Block, error) {
+func isHashValid(hash string, difficulty int) bool {
+	prefix := strings.Repeat("0", difficulty)
+	return strings.HasPrefix(hash, prefix)
+}
+
+func generateBlock(oldBlock Block, BPM int) Block {
 	var newBlock Block
 
 	t := time.Now()
+
 	newBlock.Index = oldBlock.Index + 1
 	newBlock.Timestamp = t.String()
 	newBlock.BPM = BPM
 	newBlock.PrevHash = oldBlock.Hash
-	newBlock.Hash = calculateHash(newBlock)
+	newBlock.Difficulty = difficulty
 
-	return newBlock, nil
+	for i := 0; ; i++ {
+		hex := fmt.Sprintf("%x", i)
+		newBlock.Nounce = hex
+		if !isHashValid(calculateHash(newBlock), newBlock.Difficulty) {
+			fmt.Println(calculateHash(newBlock), " do more work!!!!")
+			time.Sleep(time.Second)
+			continue
+		} else {
+			fmt.Println(calculateHash(newBlock), " work done...!!!!")
+			newBlock.Hash = calculateHash(newBlock)
+			break
+		}
+	}
+
+	return newBlock
 }
 
 func isBlockValid(newBlock, oldBlock Block) bool {
@@ -99,37 +133,32 @@ func handleGetBlockchain(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, string(bytes))
 }
 
-type Message struct {
-	BPM int
-}
-
 func handleWriteBlock(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	var m Message
 
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&m); err != nil {
-		responseWithJSON(w, r, http.StatusBadRequest, r.Body)
+		respondWithJSON(w, r, http.StatusBadRequest, r.Body)
 		return
 	}
 	defer r.Body.Close()
 
-	newBlock, err := generateBlock(BlockChain[len(BlockChain)-1], m.BPM)
-	if err != nil {
-		responseWithJSON(w, r, http.StatusInternalServerError, m)
-		return
-	}
+	mutex.Lock()
+	newBlock := generateBlock(BlockChain[len(BlockChain)-1], m.BPM)
+	mutex.Unlock()
 
 	if isBlockValid(newBlock, BlockChain[len(BlockChain)-1]) {
-		newBlockChain := append(BlockChain, newBlock)
-		replaceChain(newBlockChain)
+		BlockChain = append(BlockChain, newBlock)
 		spew.Dump(BlockChain)
 	}
 
-	responseWithJSON(w, r, http.StatusCreated, newBlock)
+	respondWithJSON(w, r, http.StatusCreated, newBlock)
 
 }
 
-func responseWithJSON(w http.ResponseWriter, r *http.Request, code int, payload interface{}) {
+func respondWithJSON(w http.ResponseWriter, r *http.Request, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
 	response, err := json.MarshalIndent(payload, "", " ")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -148,9 +177,13 @@ func main() {
 
 	go func() {
 		t := time.Now()
-		genesisBlock := Block{0, t.String(), 0, "", ""}
+		genesisBlock := Block{}
+		genesisBlock = Block{0, t.String(), 0, calculateHash(genesisBlock), "", difficulty, ""}
 		spew.Dump(genesisBlock)
+
+		mutex.Lock()
 		BlockChain = append(BlockChain, genesisBlock)
+		mutex.Unlock()
 	}()
 	log.Fatal(run())
 }
