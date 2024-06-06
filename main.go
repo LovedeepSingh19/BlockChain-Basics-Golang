@@ -139,6 +139,20 @@ func isHashValid(hash string, difficulty int) bool {
 	return strings.HasPrefix(hash, prefix)
 }
 
+func getNonceValue(nonce string) int {
+	if nonce == "" {
+		return 0
+	}
+
+	value, err := strconv.Atoi(nonce)
+	if err != nil {
+		fmt.Println("Error converting nonce to integer:", err)
+		return 0
+	}
+
+	return value + 1
+}
+
 func generateBlock(oldBlock Block, BPM int) (Block, error) {
 	var newBlock Block
 
@@ -150,8 +164,8 @@ func generateBlock(oldBlock Block, BPM int) (Block, error) {
 	newBlock.PrevHash = oldBlock.Hash
 	newBlock.Difficulty = difficulty
 
-	for i := 0; ; i++ {
-		hex := fmt.Sprintf("%x", i)
+	for i := getNonceValue(oldBlock.Nounce); ; i++ {
+		hex := fmt.Sprintf("%d", i)
 		newBlock.Nounce = hex
 		if !isHashValid(calculateHash(newBlock), newBlock.Difficulty) {
 			fmt.Println(calculateHash(newBlock), " do more work!!!!")
